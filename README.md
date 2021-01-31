@@ -1,1 +1,1 @@
-# rs-raft
+Implementation of the [Raft consensus algorithm](https://raft.github.io/) using [Rust programming language](https://www.rust-lang.org/).
