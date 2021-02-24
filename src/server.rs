@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 #[derive(Debug, PartialEq)]
 enum State {
     FOLLOWER,
@@ -47,17 +49,54 @@ impl<'a> Server<'a> {
             term: self.current_term + 1,
             candidate_id: self.id,
         };
-        self.followers
+        let counters = self
+            .followers
             .iter_mut()
             .map(|f| f.process_vote_request(&vote_request))
-            .all(|resp| resp.vote_granted == true)
+            .fold(HashMap::new(), |mut acc, resp| {
+                *acc.entry(resp.vote_granted).or_insert(0) += 1;
+                acc
+            });
+
+        match counters.get(&true) {
+            Some(count) => *count >= self.followers.len() / 2,
+            None => false,
+        }
     }
 
-    fn process_vote_request(&self, vote_request: &VoteRequest) -> VoteResponse {
-        VoteResponse {
-            term: vote_request.term,
-            vote_granted: true,
-        }
+    //TODO fix issues with borrow checker. Add tokio and try using channels (or something else?)
+    fn process_vote_request(&mut self, vote_request: &VoteRequest) -> VoteResponse {
+        if vote_request.term < self.current_term {
+            return VoteResponse {
+                term: self.current_term,
+                vote_granted: false,
+            };
+        };
+        let response = return match self.voted_for {
+            Some(candidate_id) => {
+                if candidate_id == vote_request.candidate_id {
+                    self.current_term = vote_request.term;
+                    VoteResponse {
+                        term: vote_request.term,
+                        vote_granted: false,
+                    }
+                } else {
+                    VoteResponse {
+                        term: vote_request.term,
+                        vote_granted: false,
+                    }
+                }
+            }
+            None => {
+                self.voted_for = Option::from(vote_request.candidate_id);
+                self.current_term = vote_request.term;
+                VoteResponse {
+                    term: vote_request.term,
+                    vote_granted: true,
+                }
+            }
+        };
+        response
     }
 }
 
