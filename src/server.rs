@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use crate::server::State::{FOLLOWER, CANDIDATE, LEADER};
+use mockall::automock;
 
 #[derive(Debug, PartialEq)]
 enum State {
@@ -14,7 +15,7 @@ struct Server<'a> {
     id: i64,
     current_term: i64,
     voted_for: Option<i64>,
-    followers: Vec<Rc<RefCell<&'a mut Server<'a>>>>,
+    followers: Vec<Rc<RefCell<&'a mut dyn Node>>>,
 }
 
 struct VoteRequest {
@@ -22,9 +23,17 @@ struct VoteRequest {
     candidate_id: i64,
 }
 
+#[derive(Clone)]
 struct VoteResponse {
     term: i64,
     vote_granted: bool,
+}
+
+#[automock]
+trait Node {
+    fn request_vote(&mut self);
+
+    fn process_vote_request(&mut self, vote_request: &VoteRequest) -> VoteResponse;
 }
 
 impl<'a> Server<'a> {
@@ -38,22 +47,25 @@ impl<'a> Server<'a> {
         }
     }
 
-    fn add_follower(&mut self, follower: &'a mut Server<'a>) {
+    fn add_follower(&mut self, follower: &'a mut dyn Node) {
         self.followers.push(Rc::new(RefCell::new(follower)))
     }
 
-    fn add_followers(&mut self, followers: Vec<&'a mut Server<'a>>) {
+    fn add_followers(&mut self, followers: Vec<&'a mut dyn Node>) {
         for f in followers {
             self.add_follower(f)
         }
     }
+}
 
+impl<'a> Node for Server<'a> {
     fn request_vote(&mut self) {
         self.state = CANDIDATE;
-        let next_term = self.current_term + 1;
+        self.current_term += 1;
+        self.voted_for = Option::from(self.id);
 
         let vote_request = VoteRequest {
-            term: next_term,
+            term: self.current_term,
             candidate_id: self.id,
         };
 
@@ -61,8 +73,9 @@ impl<'a> Server<'a> {
         for follower in &self.followers {
             let vote_response = follower.borrow_mut().process_vote_request(&vote_request);
 
-            if vote_response.term > next_term {
+            if vote_response.term > self.current_term {
                 self.state = FOLLOWER;
+                self.current_term = vote_response.term;
                 return;
             }
 
@@ -91,7 +104,7 @@ impl<'a> Server<'a> {
                         vote_granted = true;
                         term = vote_request.term;
                     } else {
-                        vote_granted == false;
+                        vote_granted = false;
                     }
                 }
                 // Should probably never happen, but just in case...
@@ -120,8 +133,8 @@ impl<'a> Server<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::server::Server;
-    use crate::server::State::*;
+    use super::*;
+    use core::panicking::assert_failed;
 
     #[test]
     fn server_new() {
@@ -131,17 +144,39 @@ mod tests {
     }
 
     #[test]
-    fn request_vote() {
-        let mut leader = Server::new(0);
-        let mut follower_1 = Server::new(1);
-        let mut follower_2 = Server::new(2);
-        let mut follower_3 = Server::new(3);
-        let mut follower_4 = Server::new(4);
-        let followers = vec![&mut follower_1, &mut follower_2, &mut follower_3, &mut follower_4];
-        leader.add_followers(followers);
+    fn request_vote_win_election() {
+        let mut server = Server::new(0);
+        let mut node_1 = Server::new(1);
+        let mut node_2 = Server::new(2);
+        let mut node_3 = Server::new(3);
+        let mut node_4 = Server::new(4);
+        let followers: Vec<&mut dyn Node> = vec![&mut node_1, &mut node_2, &mut node_3, &mut node_4];
+        server.add_followers(followers);
 
-        leader.request_vote();
+        server.request_vote();
 
-        assert_eq!(LEADER, leader.state)
+        assert_eq!(LEADER, server.state);
+        assert_eq!(1, server.current_term);
+    }
+
+    #[test]
+    fn request_vote_higher_term() {
+        let mut server = Server::new(0);
+        let mut node_mock=  MockNode::new();
+        node_mock.expect_process_vote_request()
+            .return_const(VoteResponse{
+                term: 42,
+                vote_granted: false
+            });
+        let mut node_1 = Server::new(1);
+        let mut node_2 = Server::new(2);
+        let mut node_3 = Server::new(3);
+        let followers: Vec<&mut dyn Node> = vec![&mut node_mock, &mut node_1, &mut node_2, &mut node_3];
+        server.add_followers(followers);
+
+        server.request_vote();
+
+        assert_eq!(FOLLOWER, server.state);
+        assert_eq!(42, server.current_term);
     }
 }
