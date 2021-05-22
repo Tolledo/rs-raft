@@ -134,7 +134,6 @@ impl<'a> Node for Server<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::panicking::assert_failed;
 
     #[test]
     fn server_new() {
