@@ -1,6 +1,6 @@
+use mockall::automock;
 use std::cell::RefCell;
 use std::rc::Rc;
-use mockall::automock;
 
 #[derive(Debug, PartialEq)]
 enum State {
@@ -123,10 +123,7 @@ impl<'a> Node for Server<'a> {
             term = vote_request.term;
         }
 
-        VoteResponse {
-            term,
-            vote_granted,
-        }
+        VoteResponse { term, vote_granted }
     }
 }
 
@@ -148,7 +145,8 @@ mod tests {
         let mut node_2 = Server::new(2);
         let mut node_3 = Server::new(3);
         let mut node_4 = Server::new(4);
-        let followers: Vec<&mut dyn Node> = vec![&mut node_1, &mut node_2, &mut node_3, &mut node_4];
+        let followers: Vec<&mut dyn Node> =
+            vec![&mut node_1, &mut node_2, &mut node_3, &mut node_4];
         server.add_followers(followers);
 
         server.request_vote();
@@ -160,16 +158,18 @@ mod tests {
     #[test]
     fn request_vote_higher_term() {
         let mut server = Server::new(0);
-        let mut node_mock=  MockNode::new();
-        node_mock.expect_process_vote_request()
-            .return_const(VoteResponse{
+        let mut node_mock = MockNode::new();
+        node_mock
+            .expect_process_vote_request()
+            .return_const(VoteResponse {
                 term: 42,
-                vote_granted: false
+                vote_granted: false,
             });
         let mut node_1 = Server::new(1);
         let mut node_2 = Server::new(2);
         let mut node_3 = Server::new(3);
-        let followers: Vec<&mut dyn Node> = vec![&mut node_mock, &mut node_1, &mut node_2, &mut node_3];
+        let followers: Vec<&mut dyn Node> =
+            vec![&mut node_mock, &mut node_1, &mut node_2, &mut node_3];
         server.add_followers(followers);
 
         server.request_vote();
