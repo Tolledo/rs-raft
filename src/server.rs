@@ -1,13 +1,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::server::State::{FOLLOWER, CANDIDATE, LEADER};
 use mockall::automock;
 
 #[derive(Debug, PartialEq)]
 enum State {
-    FOLLOWER,
-    CANDIDATE,
-    LEADER,
+    Follower,
+    Candidate,
+    Leader,
 }
 
 struct Server<'a> {
@@ -39,7 +38,7 @@ trait Node {
 impl<'a> Server<'a> {
     fn new(id: i64) -> Self {
         Server {
-            state: State::FOLLOWER,
+            state: State::Follower,
             id,
             current_term: 0,
             voted_for: None,
@@ -60,7 +59,7 @@ impl<'a> Server<'a> {
 
 impl<'a> Node for Server<'a> {
     fn request_vote(&mut self) {
-        self.state = CANDIDATE;
+        self.state = State::Candidate;
         self.current_term += 1;
         self.voted_for = Option::from(self.id);
 
@@ -74,7 +73,7 @@ impl<'a> Node for Server<'a> {
             let vote_response = follower.borrow_mut().process_vote_request(&vote_request);
 
             if vote_response.term > self.current_term {
-                self.state = FOLLOWER;
+                self.state = State::Follower;
                 self.current_term = vote_response.term;
                 return;
             }
@@ -84,7 +83,7 @@ impl<'a> Node for Server<'a> {
             }
         }
         if voted >= self.followers.len() / 2 {
-            self.state = LEADER
+            self.state = State::Leader
         }
     }
 
@@ -124,10 +123,10 @@ impl<'a> Node for Server<'a> {
             term = vote_request.term;
         }
 
-        return VoteResponse {
+        VoteResponse {
             term,
             vote_granted,
-        };
+        }
     }
 }
 
@@ -139,7 +138,7 @@ mod tests {
     fn server_new() {
         let server = Server::new(0);
         assert_eq!(0, server.id);
-        assert_eq!(FOLLOWER, server.state);
+        assert_eq!(State::Follower, server.state);
     }
 
     #[test]
@@ -154,7 +153,7 @@ mod tests {
 
         server.request_vote();
 
-        assert_eq!(LEADER, server.state);
+        assert_eq!(State::Leader, server.state);
         assert_eq!(1, server.current_term);
     }
 
@@ -175,7 +174,7 @@ mod tests {
 
         server.request_vote();
 
-        assert_eq!(FOLLOWER, server.state);
+        assert_eq!(State::Follower, server.state);
         assert_eq!(42, server.current_term);
     }
 }
