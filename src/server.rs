@@ -1,8 +1,14 @@
 use async_trait::async_trait;
 use futures::stream::{FuturesUnordered, StreamExt};
+use futures::{
+    future::FutureExt, // for `.fuse()`
+    pin_mut,
+    select,
+};
 use mockall::automock;
-use tokio::sync::Mutex;
-use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc::{Receiver, Sender};
+
 
 #[derive(Clone, Debug, PartialEq)]
 enum State {
@@ -11,15 +17,17 @@ enum State {
     Leader,
 }
 
-#[derive(Clone)]
-struct Server<'a> {
+struct Server {
     state: State,
     id: i64,
     current_term: i64,
     voted_for: Option<i64>,
-    followers: Vec<Arc<Mutex<&'a mut dyn Node>>>,
+    rx: Receiver<Command>,
+    tx: Sender<Command>,
+    nodes: Vec<Sender<Command>>,
 }
 
+#[derive(Clone)]
 struct VoteRequest {
     term: i64,
     candidate_id: i64,
@@ -31,6 +39,13 @@ struct VoteResponse {
     vote_granted: bool,
 }
 
+enum Command {
+    Vote {
+        request: VoteRequest,
+        resp: oneshot::Sender<VoteResponse>,
+    },
+}
+
 #[async_trait]
 #[automock]
 trait Node: Send + Sync {
@@ -39,30 +54,51 @@ trait Node: Send + Sync {
     async fn process_vote_request(&mut self, vote_request: &VoteRequest) -> VoteResponse;
 }
 
-impl<'a> Server<'a> {
+impl Server {
     fn new(id: i64) -> Self {
+        let (tx, rx) = mpsc::channel(32);
         Server {
             state: State::Follower,
             id,
             current_term: 0,
             voted_for: None,
-            followers: vec![],
+            rx,
+            tx,
+            nodes: vec![],
         }
     }
 
-    fn add_follower(&mut self, follower: &'a mut dyn Node) {
-        self.followers.push(Arc::new(Mutex::new(follower)))
+    fn add_node(&mut self, node: Sender<Command>) {
+        self.nodes.push(node)
     }
 
-    fn add_followers(&mut self, followers: Vec<&'a mut dyn Node>) {
-        for f in followers {
-            self.add_follower(f)
+    fn add_nodes(&mut self, nodes: Vec<Sender<Command>>) {
+        for node in nodes {
+            self.add_node(node)
+        }
+    }
+
+    async fn start(&mut self) {
+        loop {
+            use Command::*;
+
+            match self.rx.recv().await {
+                Some(cmd) => {
+                    match cmd {
+                        Vote { request, resp } => {
+                            let res = self.process_vote_request(&request).await;
+                            resp.send(res);
+                        }
+                    }
+                }
+                None => {}
+            }
         }
     }
 }
 
 #[async_trait]
-impl<'a> Node for Server<'a> {
+impl Node for Server {
     async fn request_vote(&mut self) {
         self.state = State::Candidate;
         self.current_term += 1;
@@ -74,33 +110,41 @@ impl<'a> Node for Server<'a> {
         };
 
         let mut voted = 0;
-        // let mut all_futures = FuturesUnordered::new();
-        for follower in &self.followers {
-            let mut lock = follower.lock().await;
-            let vote_response = lock.process_vote_request(&vote_request).await;
-            // all_futures.push(future);
-        // }
 
-        // while let Some(vote_response) = all_futures.next().await {
-            if vote_response.term > self.current_term {
-                self.state = State::Follower;
-                self.current_term = vote_response.term;
-                return;
-            }
+        let mut receivers = FuturesUnordered::new();
+        for node in &self.nodes {
+            let (resp_tx, resp_rx) = oneshot::channel();
+            let cmd = Command::Vote {
+                request: vote_request.clone(),
+                resp: resp_tx,
+            };
+            receivers.push(resp_rx);
+            node.send(cmd);
+        }
 
-            if vote_response.vote_granted {
-                voted += 1
+        while let Some(result) = receivers.next().await {
+            match result {
+                Ok(vote_response) => {
+                    if vote_response.term > self.current_term {
+                        self.state = State::Follower;
+                        self.current_term = vote_response.term;
+                        return;
+                    }
+
+                    if vote_response.vote_granted {
+                        voted += 1
+                    }
+                }
+                Err(_) => {}
             }
         }
-        if voted >= self.followers.len() / 2 {
+
+        if voted >= self.nodes.len() / 2 {
             self.state = State::Leader
         }
     }
 
-    async fn process_vote_request(
-        &mut self,
-        vote_request: &VoteRequest,
-    ) -> VoteResponse {
+    async fn process_vote_request(&mut self, vote_request: &VoteRequest) -> VoteResponse {
         let mut vote_granted = false;
         let mut term = 0;
 
@@ -158,11 +202,14 @@ mod tests {
         let mut node_2 = Server::new(2);
         let mut node_3 = Server::new(3);
         let mut node_4 = Server::new(4);
-        let followers: Vec<&mut dyn Node> =
-            vec![&mut node_1, &mut node_2, &mut node_3, &mut node_4];
-        server.add_followers(followers);
+        let nodes =
+            vec![node_1.tx.clone(), node_2.tx.clone(), node_3.tx.clone(), node_4.tx.clone()];
+        server.add_nodes(nodes);
 
-        server.request_vote().await;
+        select! {
+            () = server.start().fuse() => (),
+            () = server.request_vote().fuse() => (),
+        }
 
         assert_eq!(State::Leader, server.state);
         assert_eq!(1, server.current_term);
